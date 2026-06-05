@@ -1,0 +1,79 @@
+services:
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: argosuy-clickhouse
+    restart: unless-stopped
+    ports:
+      - "8123:8123"   # HTTP interface (clickhouse-connect, curl)
+      - "9000:9000"   # native TCP interface
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+    environment:
+      CLICKHOUSE_DB: argosuy
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-argosuy}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    container_name: argosuy-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: argosuy
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-argosuy}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  crawler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: crawler
+    container_name: argosuy-crawler
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: argosuy
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-argosuy}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      # SSE broadcaster host — crawler pushes events to the API process
+      API_HOST: http://api:8000
+      PREFECT_API_URL: ${PREFECT_API_URL:-}   # leave empty to use local ephemeral server
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+volumes:
+  clickhouse_data:
+  clickhouse_logs:
